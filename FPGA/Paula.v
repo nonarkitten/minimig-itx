@@ -58,6 +58,9 @@
 //
 // SB:
 // 2013-03-16	- added a few stabiliuty function for AR3 at Turbo mode
+//
+// RNC:
+// 2022-02-22   - rewmoved multipliers, made audio PWM + PCM as god (Jay) intended
 
 module Paula
 (

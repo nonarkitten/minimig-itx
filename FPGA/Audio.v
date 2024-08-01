@@ -75,6 +75,10 @@
 // 2012-10-27	- new audio module, a hybrid PWM / SD DAC.
 //			Silences audio channel when replen is 1 - fix for Gods jump noise.
 
+//
+// RNC:
+// 2022-02-22   - rewmoved multipliers, made audio PWM + PCM as god (Jay) intended
+
 module audio
 (
 	input 	clk,		    		//bus clock
