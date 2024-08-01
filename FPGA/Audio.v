@@ -214,8 +214,9 @@ audiochannel ach3
 );
 
 //instantiate volume control and sigma/delta modulator
-sigmadelta dac0 (		
-	.clk(clk),
+sigmadelta dac0
+(
+	.clk({clk28m}),
 	.sample0(sample0),
 	.sample1(sample1),
 	.sample2(sample2),
@@ -224,6 +225,7 @@ sigmadelta dac0 (
 	.vol1(vol1),
 	.vol2(vol2),
 	.vol3(vol3),
+	.strhor(strhor),
 	.left(left),
 	.right(right)
 );
@@ -231,6 +233,63 @@ sigmadelta dac0 (
 //--------------------------------------------------------------------------------------
 
 endmodule
+
+// Hybrid PWM / Sigma Delta converter
+//
+// Uses 5-bit PWM, wrapped within a 10-bit Sigma Delta, with the intention of
+// increasing the pulse width, since narrower pulses seem to equate to more
+// noise on the Minimig
+
+module hybrid_pwm_sd
+(
+	input clk,
+	input n_reset,
+	input dump,
+	input [15:0] din,
+	output dout
+);
+
+reg [4:0] pwmcounter;
+reg [4:0] pwmthreshold;
+reg [33:0] scaledin;
+reg [15:0] sigma;
+reg [24:0] lfsr_reg = 1234;
+reg out;
+
+assign dout = out;
+
+always @(posedge clk, negedge n_reset) // FIXME reset logic;
+	begin
+		if (!n_reset)
+		begin
+			sigma <= 16'b00000100_00000000;
+			pwmthreshold <= 5'b10000;
+		end
+		else
+		begin
+			pwmcounter <= pwmcounter + 1;
+
+			if (pwmcounter==pwmthreshold)
+				out <= 1'b0;
+
+			if (pwmcounter==5'b11111) // Update threshold when pwmcounter reaches zero
+			begin
+				// Pick a new PWM threshold using a Sigma Delta
+				scaledin <= 33'd134217728 + ({1'b0,din} * 61440); // 30<<(16-5)-1;
+				sigma <= scaledin[31:16] + {5'b000000,sigma[10:0]};	// Will use previous iteration's scaledin value
+				pwmthreshold <= sigma[15:11]; // Will lag 2 cycles behind, but shouldn't matter.
+				out <= 1'b1;
+			end
+
+			if (dump)
+			begin
+				sigma[10:0] <= 10'b10_0000_0000; // Clear the accumulator to avoid standing tones.
+			end
+		end
+	end
+
+endmodule
+
 
 //--------------------------------------------------------------------------------------
 //--------------------------------------------------------------------------------------
@@ -241,66 +300,160 @@ endmodule
 // stereo sigma/delta bitstream modulator
 // channel 1&2 --> left
 // channel 0&3 --> right
-module sigmadelta(clk,sample0,sample1,sample2,sample3,vol0,vol1,vol2,vol3,left,right);
-input 	clk;				//bus clock (3.58MHz)
-input	[7:0]sample0;		//sample 0 input
-input	[7:0]sample1;		//sample 1 input
-input	[7:0]sample2;		//sample 2 input
-input	[7:0]sample3;		//sample 3 input
-input	[6:0]vol0;			//volume 0 input
-input	[6:0]vol1;			//volume 1 input
-input	[6:0]vol2;			//volume 2 input
-input	[6:0]vol3;			//volume 3 input
-output reg left;				//left bitstream output
-output reg right;				//right bitsteam output
+module sigmadelta
+(
+	input clk,					//bus clock
+	input	[7:0] sample0,		//sample 0 input
+	input	[7:0] sample1,		//sample 1 input
+	input	[7:0] sample2,		//sample 2 input
+	input	[7:0] sample3,		//sample 3 input
+	input	[6:0] vol0,			//volume 0 input
+	input	[6:0] vol1,			//volume 1 input
+	input	[6:0] vol2,			//volume 2 input
+	input	[6:0] vol3,			//volume 3 input
+	input	strhor,
+	output	left,				//left bitstream output
+	output	right				//right bitsteam output
+);
 
 //local signals
-reg	  [8:0]acc0;		//delsig accumulator left	
-reg	  [8:0]acc1;		//delsig accumulator right
-reg	  [8:0]acc2;		//delsig accumulator left	
-reg	  [8:0]acc3;		//delsig accumulator right
-reg     [5:0]vol0pwm;
-reg     [5:0]vol1pwm;
-reg     [5:0]vol2pwm;
-reg     [5:0]vol3pwm;
-reg     [2:0]leftmix;	//paula 2-bit full adder (SN7482)
-reg     [2:0]rightmix;	//paula 2-bit full adder (SN7482)
+reg		[14:0] acculeft;		//sigma/delta accumulator left
+reg		[14:0] accuright;		//sigma/delta accumulator right
+wire	[7:0] leftsmux;			//left mux sample
+wire	[7:0] rightsmux;		//right mux sample
+wire	[6:0] leftvmux;			//left mux volum
+wire	[6:0] rightvmux;		//right mux volume
+wire	[13:0] ldata;			//left DAC data
+wire	[13:0] rdata; 			//right DAC data
+reg	[13:0]ldatatmp;		//left DAC data
+reg	[13:0]rdatatmp; 		//right DAC data
+reg	[14:0]ldatasum;		//left DAC data
+reg	[14:0]rdatasum; 		//right DAC data
+reg		mxc;					//multiplex control
 
 //--------------------------------------------------------------------------------------
 
+//multiplexer control
 always @(posedge clk)
-begin
-	if (vol0 == 0) vol0pwm <= 0;
-	else vol0pwm <= vol0pwm + 1;
-		
-	if (vol1 == 0) vol1pwm <= 0;
-	else vol1pwm <= vol1pwm + 1;
-		
-	if (vol2 == 0) vol2pwm <= 0;
-	else vol2pwm <= vol2pwm + 1;
-		
-	if (vol3 == 0) vol3pwm <= 0;
-	else vol3pwm <= vol3pwm + 1;
-	
-	leftmix <= {2{(acc1[8] & (vol1pwm < vol1))}}
-		      + {2{(acc2[8] & (vol2pwm < vol2))}}
-				+ leftmix[0];
-	left    <= leftmix[2];
+	begin
+		mxc <= ~mxc;
+		if (mxc)
+		begin
+			ldatatmp <= ldata;
+			rdatatmp <= rdata;
+		end
+		else
+		begin
+			ldatasum <= {ldata[13], ldata} + {ldatatmp[13], ldatatmp};
+			rdatasum <= {rdata[13], rdata} + {rdatatmp[13], rdatatmp};
+		end
+	end
 
-	rightmix <= {2{(acc0[8] & (vol0pwm < vol0))}}
-		       + {2{(acc3[8] & (vol3pwm < vol3))}}
-				 + rightmix[0];
-	right    <= rightmix[2];
-				
-	acc0 <= acc0[7:0] + { ~sample0[7], sample0[6:0] } + acc0[8];
-	acc1 <= acc1[7:0] + { ~sample1[7], sample1[6:0] } + acc1[8];
-	acc2 <= acc2[7:0] + { ~sample2[7], sample2[6:0] } + acc2[8];
-	acc3 <= acc3[7:0] + { ~sample3[7], sample3[6:0] } + acc3[8];
-end
+//sample multiplexer
+assign leftsmux = mxc ? sample1 : sample2;
+assign rightsmux = mxc ? sample0 : sample3;
 
-always @(negedge clk)
-begin
-end
+//volume multiplexer
+assign leftvmux = mxc ? vol1 : vol2;
+assign rightvmux = mxc ? vol0 : vol3;
+
+//left volume control
+//when volume MSB is set, volume is always maximum
+svmul sv0
+(
+	.sample(leftsmux),
+	.volume(({	(leftvmux[6] | leftvmux[5]),
+				(leftvmux[6] | leftvmux[4]),
+				(leftvmux[6] | leftvmux[3]),
+				(leftvmux[6] | leftvmux[2]),
+				(leftvmux[6] | leftvmux[1]),
+				(leftvmux[6] | leftvmux[0]) })),
+	.out(ldata)
+);
+
+//right volume control
+//when volume MSB is set, volume is always maximum
+svmul sv1
+(
+	.sample(rightsmux),
+	.volume(({	(rightvmux[6] | rightvmux[5]),
+				(rightvmux[6] | rightvmux[4]),
+				(rightvmux[6] | rightvmux[3]),
+				(rightvmux[6] | rightvmux[2]),
+				(rightvmux[6] | rightvmux[1]),
+				(rightvmux[6] | rightvmux[0]) })),
+	.out(rdata)
+	);
+
+reg [9:0] dumpcounter;
+reg dump;
+reg dump_d;
+
+always @(posedge clk)
+	begin
+		if(dump_d==1'b0 && strhor==1'b1)
+			dump <= 1'b1;
+		else
+			dump <= 1'b0;
+		dump_d <= strhor;
+	end
+
+hybrid_pwm_sd leftdac
+(
+	.clk(clk),
+	.n_reset(1'b1),
+	.dump(dump),
+	.din({~ldatasum[14],ldatasum[13:0],1'b0}),
+	.dout(left)
+);
+
+hybrid_pwm_sd rightdac
+(
+	.clk(clk),
+	.n_reset(1'b1),
+	.dump(dump),
+	.din({~rdatasum[14],rdatasum[13:0],1'b0}),
+	.dout(right)
+);
+
+
+//--------------------------------------------------------------------------------------
+//left sigma/delta modulator
+//always @(posedge clk)
+//	acculeft[12:1] <= (acculeft[12:1] + {acculeft[12],acculeft[12],~ldatasum[14],ldatasum[13:5]});
+//
+//assign left = acculeft[12];
+//
+////right sigma/delta modulator
+//always @(posedge clk)
+//	accuright[12:1] <= (accuright[12:1] + {accuright[12],accuright[12],~rdatasum[14],rdatasum[13:5]});
+//
+//assign right = accuright[12];
+
+endmodule
+
+//--------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------
+
+//this module multiplies a signed 8 bit sample with an unsigned 6 bit volume setting
+//it produces a 14bit signed result
+module svmul
+(
+	input		[7:0] sample,		//signed sample input
+	input		[5:0] volume,		//unsigned volume input
+	output	[13:0] out			//signed product out
+);
+
+wire	[13:0] sesample;			//sign extended sample
+wire	[13:0] sevolume;			//sign extended volume
+
+//sign extend input parameters
+assign	sesample[13:0] = {{6{sample[7]}},sample[7:0]};
+assign	sevolume[13:0] = ({8'b00000000,volume[5:0]});
+
+//multiply, synthesizer should infer multiplier here - fixed by ASC (boing4000)
+assign out[13:0] = ({sesample[13:0] * sevolume[13:0]});
 
 endmodule
 

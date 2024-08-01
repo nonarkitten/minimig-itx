@@ -94,6 +94,7 @@ module userio
 	output	[1:0] lr_filter,
 	output	[1:0] hr_filter,
 	output	[3:0] memory_config,
+	output	[1:0] fast_memory_config,
 	output	[3:0] chipset_config,
 	output	[3:0] floppy_config,
 	output	[1:0] scanline,
@@ -285,6 +286,7 @@ osd	osd1
 	.lr_filter(lr_filter),
 	.hr_filter(hr_filter),
 	.memory_config(memory_config),
+	.fast_memory_config(fast_memory_config),
 	.chipset_config(chipset_config),
 	.floppy_config(floppy_config),
 	.scanline(scanline),
@@ -326,6 +328,7 @@ module osd
 	output	reg [1:0] lr_filter = 0,
 	output	reg [1:0] hr_filter = 0,
 	output	reg [3:0] memory_config = 0,
+	output	reg [1:0] fast_memory_config = 0,
 	output	reg [3:0] chipset_config = 0,
 	output	reg [3:0] floppy_config = 0,
 	output	reg [1:0] scanline = 0,
@@ -351,6 +354,7 @@ reg		[5:0] vpos;
 reg		vena;
 
 reg 	[3:0] t_memory_config = 0;
+reg   [1:0] t_fast_memory_config = 0;
 reg		[2:0] t_ide_config = 0;
 reg 	[3:0] t_chipset_config = 0;
 
@@ -365,12 +369,14 @@ always @(posedge clk)
 		chipset_config[1] <= t_chipset_config[1];
 		ide_config <= t_ide_config;
 		memory_config <= t_memory_config;
+		//fast_memory_config <= t_fast_memory_config;
 	end
 
 always @(posedge clk)
 begin
 	chipset_config[3:2] <= t_chipset_config[3:2];
 	chipset_config[0] <= t_chipset_config[0];
+	fast_memory_config <= t_fast_memory_config;
 end
 
 //--------------------------------------------------------------------------------------
@@ -520,6 +526,11 @@ always @(posedge clk)
 always @(posedge clk)
 	if (rx && cmd && wrdat[7:4]==4'b1111)
 		t_memory_config[3:0] <= wrdat[3:0];
+		
+// Fast memory configuration (enable/disable)
+always @(posedge clk)
+	if (rx && cmd && wrdat[7:2]==6'b100101)  //#define OSDCMDCFGFAST    0x94
+		t_fast_memory_config[1:0] <= wrdat[1:0];
 
 // autofire configuration
 always @(posedge clk)

@@ -164,7 +164,7 @@ module Agnus
 	input	[15:0] data_in,				// data bus in
 	output	[15:0] data_out,			// data bus out
 	input 	[8:1] address_in,			// 256 words (512 bytes) adress input,
-	output	reg [20:1] address_out,		// chip address output,
+	output	reg [21:1] address_out,		// chip address output, #vlog
 	output 	[8:1] reg_address_out,		// 256 words (512 bytes) register address out,
 	output	reg dbr,					// agnus requests data bus
 	output	reg dbwe,					// agnus does a memory write cycle (only disk and blitter dma channels may do this)
@@ -232,12 +232,12 @@ wire	req_blt; 				//blitter dma request
 reg		ack_blt;				//blitter dma acknowledge
 wire	dma_blt;				//blitter dma is using its slot
 wire	[15:0] data_bmc;		//beam counter data out
-wire	[20:1] address_dsk;		//disk dma engine chip address out
+wire	[21:1] address_dsk;		//disk dma engine chip address out #vlog
 wire	[8:1] reg_address_dsk; 	//disk dma engine register address out
 wire	wr_dsk;					//disk dma engine write enable out
-wire	[20:1] address_aud;		//audio dma engine chip address out
+wire	[21:1] address_aud;		//audio dma engine chip address out #vlog
 wire	[8:1] reg_address_aud; 	//audio dma engine register address out
-wire	[20:1] address_bpl;		//bitplane dma engine chip address out
+wire	[21:1] address_bpl;		//bitplane dma engine chip address out #vlog
 wire	[8:1] reg_address_bpl; 	//bitplane dma engine register address out
 wire	[20:1] address_spr;		//sprite dma engine chip address out
 wire	[8:1] reg_address_spr; 	//sprite dma engine register address out
@@ -610,7 +610,7 @@ module bpldma_engine
 	input 	[8:1] reg_address_in,		// register address inputs
 	output 	reg [8:1] reg_address_out,	// register address outputs
 	input	[15:0] data_in,				// bus data in
-	output	[20:1] address_out			// chip address out
+	output	[21:1] address_out			// chip address out #vlog
 );
 
 localparam GND = 1'b0;
@@ -735,7 +735,7 @@ always @(posedge clk)
 	if (dma || ((reg_address_in[8:5]==BPLPTBASE[8:5]) && !reg_address_in[1])) // if bitplane dma cycle or bus write
 		bplpth[bplptr_sel] <= bplpth_in;
 
-assign address_out[20:16] = bplpth[plane];
+assign address_out[21:16] = {1'b0, bplpth[plane]}; //#vlog
 
 // low word pointer register bank (implemented using distributed ram)
 wire [15:1] bplptl_in;
@@ -1305,7 +1305,7 @@ module auddma_engine
 	input 	[8:1] reg_address_in,		//register address inputs
 	output 	reg [8:1] reg_address_out,	//register address outputs
 	input	[15:0] data_in,				//bus data in
-	output	[20:1] address_out			//chip address out
+	output	[21:1] address_out			//chip address out #vlog
 );
 
 //register names and adresses
@@ -1319,9 +1319,9 @@ wire	audlcena;				//audio dma location pointer register address enable
 wire	[1:0] audlcsel;			//audio dma location pointer select
 reg		[20:16] audlch [3:0];	//audio dma location pointer bank (high word)
 reg		[15:1] audlcl [3:0];	//audio dma location pointer bank (low word)
-wire	[20:1] audlcout;		//audio dma location pointer bank output
-reg		[20:1] audpt [3:0];		//audio dma pointer bank
-wire	[20:1] audptout;		//audio dma pointer bank output
+wire	[21:1] audlcout;		//audio dma location pointer bank output
+reg		[21:1] audpt [3:0];		//audio dma pointer bank
+wire	[21:1] audptout;		//audio dma pointer bank output #vlog
 reg		[1:0]  channel;			//audio dma channel select
 reg		dmal;
 reg		dmas;
@@ -1345,7 +1345,7 @@ always @(posedge clk)
 		audlcl[audlcsel] <= data_in[15:1];
 
 //get audio location pointer
-assign audlcout = {audlch[channel],audlcl[channel]};
+assign audlcout = {1'b0,audlch[channel],audlcl[channel]};
 
 //--------------------------------------------------------------------------------------
 //dma cycle allocation
@@ -1381,15 +1381,15 @@ always @(hpos)
 	endcase
 
 // memory address output
-assign address_out[20:1] = audptout[20:1];
+assign address_out[21:1] = audptout[21:1];
 
 // audio pointers register bank (implemented using distributed ram) and ALU
 always @(posedge clk)
 	if (dmal)
-		audpt[channel] <= dmas ? audlcout[20:1] : audptout[20:1] + 1;
+		audpt[channel] <= dmas ? audlcout[21:1] : audptout[21:1] + 1;
 
 // audio pointer output
-assign audptout[20:1] = audpt[channel];
+assign audptout[21:1] = audpt[channel];
 
 //register address output multiplexer
 always @(channel)
